@@ -33,6 +33,7 @@ class MpLogParser:
         self._detection_event_pattern: str = r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z).*(DETECTIONEVENT MPSOURCE_SYSTEM) (.*)'
         self._original_filename_pattern: str = r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z).*(original file name) "(.*)" (for) "(.*)", (hr)=(\w*)'
         self._ems_pattern: str = r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z).*(process): (\w*) (pid): (\d*), (sigseq): (\w*), (sendMemoryScanReport): (\d*), (source): (\d*)'
+        self._dlp_pattern: str = r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z) \[DLP\] DLP Notification:\n\tPolicy Version: \|?(.+),\n\tRule Id: \|?(.+),\n\tEnforcement Level: (.+),\n\tAction Type: (.+),\n\tProcess Name: (.+),\n\tProcess ID: (.+),\n\tUser SID: (.+),\n\tSource: \|?(.+),\n\tTarget: (.+),\n\tSession ID: (.+),\n\tAudit Reason: (.+),\n\tFilterElapsedMs: (.+),\n\tEventElapsedMs: (.+),\n\tSenseElapsedMs: (.+),\n\tToastElapsedMs: (.+),\n\tTotalMs: (.+),\n\tToastType: (.+)'
         self._process_image_name_pattern: str = r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z) (ProcessImageName): (.*), (Pid): (\d*), (TotalTime): (\d*), (Count): (\d*), (MaxTime): (\d*), (MaxTimeFile): (.*), (EstimatedImpact): (.*)'
         self._bm_telemetry_pattern: str = r'BEGIN BM telemetry(?:.*\n)+?END BM telemetry'
         self._resource_scan_pattern: str = r'Begin Resource Scan(?:.*\n)+?End Scan'
@@ -56,8 +57,10 @@ class MpLogParser:
         self._process_image_name_csv_output = self._os_adapter.join(self._output_directory,
                                                                     'MPLog_ProcessImageName.csv')
         self._rtp_perf_csv_output = self._os_adapter.join(self._output_directory, 'MPLog_RTPPerf.csv')
+        self._dlp_output_csv = self._os_adapter.join(self._output_directory, 'MPLog_DLP.csv')
         self._entries_parser_regex = re.compile(r'^([\w -]+):(.+)$', re.MULTILINE)
         self.mplog_file_name_pattern = '*MPLog-*'
+        self.dlplog_file_name_pattern = '*MPDlpLog-*'
 
     EPOCH_AS_FILETIME: int = 116444736000000000  # January 1, 1970 as MS file time
     HUNDREDS_OF_NANOSECONDS: int = 10000000
@@ -208,6 +211,32 @@ class MpLogParser:
             })
         return results
 
+    def dlp_parser(self, logs: str) -> list[dict[str, Union[list[Any], Any]]]:
+        """Parses DLP notification log entries from MPDlpLog files."""
+        results: list[dict[str, Any]] = list()
+        for match in re.findall(self._dlp_pattern, logs, re.MULTILINE):
+            results.append({
+                'timestamp':         match[0],
+                'policy_version':    match[1].strip(),
+                'rule_id':           match[2].strip(),
+                'enforcement_level': match[3].strip(),
+                'action_type':       match[4].strip(),
+                'process_name':      match[5].strip(),
+                'process_id':        match[6].strip(),
+                'user_sid':          match[7].strip(),
+                'source':            match[8].strip(),
+                'target':            match[9].strip(),
+                'session_id':        match[10].strip(),
+                'audit_reason':      match[11].strip(),
+                'filter_elapsed_ms': match[12].strip(),
+                'event_elapsed_ms':  match[13].strip(),
+                'sense_elapsed_ms':  match[14].strip(),
+                'toast_elapsed_ms':  match[15].strip(),
+                'total_ms':          match[16].strip(),
+                'toast_type':        match[17].strip(),
+            })
+        return results
+
     def originalfilename_parser(self, logs: str) -> list[dict[str, Union[list[Any], Any]]]:
         """Parses original file name change log entries."""
         results: list[dict[str, Any]] = list()
@@ -301,12 +330,13 @@ class MpLogParser:
     def orchestrator(self) -> None:
         """Runs parsers and writes results to output files."""
         for file in self._os_adapter.listdir(self._mplogs_directory):
-            if fnmatch.fnmatch(file, self.mplog_file_name_pattern):
+            if fnmatch.fnmatch(file, self.mplog_file_name_pattern) or fnmatch.fnmatch(file, self.dlplog_file_name_pattern):
                 full_path = self._os_adapter.join(self._mplogs_directory, file)
                 try:
                     logs = self._os_adapter.read_file(full_path, 'r', 'UTF-16')
                 except UnicodeError:
                     logs = self._os_adapter.read_file(full_path, 'r', 'UTF-8')
+                logs = logs.replace('\r\n', '\n')
                 self.write_results(self._rtp_perf_csv_output, self.rtp_perf_parser(logs))
                 self.write_results(self._exclusion_list_output_csv, self.exclusion_list_parser(logs))
                 self.write_results(self._mini_filter_unsuccessful_scan_status_output_csv,
@@ -323,6 +353,7 @@ class MpLogParser:
                 self.write_results(self._bm_telemetry_output_csv, self.bmtelemetry_parser(logs))
                 self.write_results(self._resource_scan_output_csv, self.resourcescan_parser(logs))
                 self.write_results(self._threat_action_output_csv, self.threatactions_parser(logs))
+                self.write_results(self._dlp_output_csv, self.dlp_parser(logs))
 
 
 def main() -> None:
